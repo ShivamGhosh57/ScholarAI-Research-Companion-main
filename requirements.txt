@@ -1,0 +1,27 @@
+# requirements.txt
+
+# Core Frameworks (Stable, older versions)
+crewai==0.35.8
+crewai-tools==0.3.0
+langgraph==0.0.48
+
+# LangChain Ecosystem (Pinned to v0.1.x for crewai compatibility)
+langchain==0.1.20
+langchain-core==0.1.52
+langchain-community==0.0.38
+langchain-groq==0.1.3
+
+# Vector Database (Pinecone & In-Memory FAISS)
+pinecone-client==3.2.2
+langchain-pinecone==0.1.1
+pypdf==4.2.0
+faiss-cpu # <-- Added for in-memory RAG
+
+# Local Embeddings
+langchain-huggingface==0.0.3
+sentence-transformers==2.7.0
+
+# UI and Utilities
+streamlit==1.36.0
+python-dotenv==1.0.1
+lxml==4.9.4
