@@ -25,7 +25,6 @@ st.set_page_config(page_title="AI Academic Research Assistant", layout="wide")
 load_dotenv()
 database.init_db()
 
-# Helper function to get secrets safely (Local .env vs Streamlit Cloud Secrets)
 def get_secret(key):
     if key in os.environ:
         return os.environ[key]
@@ -33,16 +32,13 @@ def get_secret(key):
         return st.secrets[key]
     return None
 
-# Load keys
 groq_api_key = get_secret("GROQ_API_KEY")
 pinecone_api_key = get_secret("PINECONE_API_KEY")
 
-# Validate keys
 if not groq_api_key or not pinecone_api_key:
     st.error("🚨 Missing API Keys! Please check your .env file (local) or Streamlit Secrets (cloud).")
     st.stop()
 
-# Set keys to environment variables so libraries like Pinecone/LangChain can find them automatically
 os.environ["GROQ_API_KEY"] = groq_api_key
 os.environ["PINECONE_API_KEY"] = pinecone_api_key
 
@@ -54,15 +50,16 @@ class PineconeSearchTool(BaseTool):
     def _run(self, query: str) -> str:
         embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
         vectorstore = PineconeVectorStore(index_name="academic-research", embedding=embeddings)
-        docs = vectorstore.similarity_search(query, k=5)
+        # LIMIT REDUCED: Changed k=5 to k=2 to prevent RateLimitError
+        docs = vectorstore.similarity_search(query, k=2)
         return "\n---\n".join([doc.page_content for doc in docs])
 
 pinecone_search_tool = PineconeSearchTool()
 
 # --- 3. Define Agents ---
-# Initialize LLM using the retrieved key
+# CHANGED MODEL: Switched to llama-3.3-70b-versatile for better performance/limits
 llm = ChatGroq(
-    model="llama-3.1-8b-instant",  # <--- NEW SUPPORTED MODEL
+    model="llama-3.3-70b-versatile",
     groq_api_key=groq_api_key
 )
 
@@ -118,6 +115,12 @@ def literature_search_node(state: ResearchState):
         agent=literature_search_agent
     )
     result = literature_search_agent.execute_task(task)
+    
+    # SAFETY TRUNCATION: Ensure we don't exceed token limits
+    # 12,000 chars is roughly 3,000 tokens, leaving room for the prompt overhead
+    if len(str(result)) > 12000:
+        result = str(result)[:12000] + "... [TRUNCATED]"
+        
     return {"search_results": result}
 
 def summarize_papers_node(state: ResearchState):
@@ -182,14 +185,13 @@ def create_rag_chain(report_text):
     return rag_chain
 
 # --- 8. Streamlit Interface ---
-
 # Initialize session state
 if "selected_conversation_id" not in st.session_state:
     st.session_state.selected_conversation_id = None
 if "rag_chain" not in st.session_state:
     st.session_state.rag_chain = None
 
-# --- Sidebar ---
+# Sidebar
 with st.sidebar:
     st.title("📚 Assistant Menu")
     
@@ -204,20 +206,17 @@ with st.sidebar:
         st.info("No history yet.")
         
     for convo in conversations:
-        # Display conversations as buttons
         if st.button(convo[1], key=f"convo_{convo[0]}"):
             st.session_state.selected_conversation_id = convo[0]
-            # Load context for RAG
             messages = database.get_messages(convo[0])
             if messages:
-                # Assume first assistant message is the report
                 report_text = messages[0]['content']
                 st.session_state.rag_chain = create_rag_chain(report_text)
             else:
                 st.session_state.rag_chain = None
             st.rerun()
 
-# --- Main Area ---
+# Main Area
 st.title("AI Academic Research Assistant 🧠")
 
 if st.session_state.selected_conversation_id is None:
@@ -236,11 +235,9 @@ if st.session_state.selected_conversation_id is None:
                     final_report = final_state.get('final_report', 'No report was generated.')
                     
                     if final_report:
-                        # Save to DB
                         new_convo_id = database.create_conversation(topic)
                         database.add_message(new_convo_id, "assistant", final_report)
                         
-                        # Update Session State
                         st.session_state.selected_conversation_id = new_convo_id
                         st.session_state.rag_chain = create_rag_chain(final_report)
                         st.rerun()
@@ -252,31 +249,29 @@ else:
     messages = database.get_messages(st.session_state.selected_conversation_id)
     
     if messages:
-        # Display the Report (First message)
         st.markdown("### 📑 Research Report")
         st.markdown(messages[0]['content'])
         st.markdown("---")
         st.subheader("💬 Chat with this Report")
 
-    # Display Chat History (Excluding the first report message)
     chat_history = messages[1:]
     for message in chat_history:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    # Chat Input
     if prompt := st.chat_input("Ask a follow-up question..."):
-        # 1. Save User Message
         database.add_message(st.session_state.selected_conversation_id, "user", prompt)
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # 2. Generate & Save Assistant Response
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
                 if st.session_state.rag_chain:
-                    response = st.session_state.rag_chain.invoke(prompt)
-                    st.markdown(response)
-                    database.add_message(st.session_state.selected_conversation_id, "assistant", response)
+                    try:
+                        response = st.session_state.rag_chain.invoke(prompt)
+                        st.markdown(response)
+                        database.add_message(st.session_state.selected_conversation_id, "assistant", response)
+                    except Exception as e:
+                        st.error(f"Error generating response: {e}")
                 else:
                     st.error("Chat context missing. Please restart research.")
